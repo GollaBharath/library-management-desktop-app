@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QTextEdit, QDateEdit, QMessageBox,
     QHeaderView, QAbstractItemView, QFrame, QSplitter,
     QScrollArea, QGroupBox, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QSizePolicy
+    QCheckBox, QSizePolicy, QApplication
 )
 from PyQt5.QtCore import Qt, QDate, pyqtSignal
 from PyQt5.QtGui import QFont, QColor
@@ -16,7 +16,6 @@ from styles import (
     SUCCESS, DANGER, WARNING, INFO, PURPLE, BG_HOVER, BG_DARK
 )
 
-# Payment status colors
 STATUS_COLORS = {
     "paid":      "#27AE60",
     "due_soon":  "#F39C12",
@@ -24,10 +23,10 @@ STATUS_COLORS = {
     "overdue":   "#E74C3C",
 }
 STATUS_LABELS = {
-    "paid":      "✅ Paid",
-    "due_soon":  "⏳ Due Soon",
-    "due_today": "💰 Due Today",
-    "overdue":   "🔴 Overdue",
+    "paid":      "Paid",
+    "due_soon":  "Due Soon",
+    "due_today": "Due Today",
+    "overdue":   "Overdue",
 }
 
 
@@ -53,110 +52,172 @@ def _add_one_month(d: date) -> date:
         return d + timedelta(days=30)
 
 
-# ─── Quick Add Dialog ────────────────────────────────────────────────────────
+def _form_row_visible(form: QFormLayout, widget, visible: bool):
+    """Show/hide both label and field of a QFormLayout row."""
+    row, _ = form.getWidgetPosition(widget)
+    if row < 0:
+        return
+    for role in (QFormLayout.LabelRole, QFormLayout.FieldRole):
+        item = form.itemAt(row, role)
+        if item and item.widget():
+            item.widget().setVisible(visible)
+
+
+# ─── Styled button helpers ────────────────────────────────────────────────────
+
+_BTN_STYLES = {
+    "edit":   (INFO,    "#1565C0"),
+    "pay":    (SUCCESS, "#1B5E20"),
+    "chat":   ("#00897B", "#004D40"),
+    "remove": (DANGER,  "#B71C1C"),
+}
+
+def _action_btn(label: str, kind: str, tooltip: str) -> QPushButton:
+    bg, hover = _BTN_STYLES[kind]
+    btn = QPushButton(label)
+    btn.setToolTip(tooltip)
+    btn.setFixedHeight(30)
+    btn.setMinimumWidth(62)
+    btn.setStyleSheet(
+        f"QPushButton {{ background-color: {bg}; color: white; border: none; "
+        f"border-radius: 5px; font-size: 11px; font-weight: bold; padding: 0 6px; }}"
+        f"QPushButton:hover {{ background-color: {hover}; }}"
+        f"QPushButton:pressed {{ background-color: {hover}; }}"
+    )
+    return btn
+
+
+# ─── Quick Add Dialog ─────────────────────────────────────────────────────────
 
 class QuickAddStudentDialog(QDialog):
     """Minimal fields for fast enrollment."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚡ Quick Add Student")
-        self.setMinimumWidth(420)
+        self.setWindowTitle("Quick Add Student")
+        self.setMinimumWidth(460)
+        self.setModal(True)
         self._result_data = None
         self._build()
 
     def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(12)
-
-        banner = QLabel("Fill in the required fields. Defaults will be applied automatically.")
-        banner.setStyleSheet(
-            f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
+        self.setStyleSheet(
+            f"QDialog {{ background-color: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
+            f"QLabel   {{ color: {TEXT_PRIMARY}; background: transparent; }}"
         )
-        banner.setWordWrap(True)
-        layout.addWidget(banner)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(16)
 
-        form = QFormLayout()
-        form.setSpacing(10)
+        # ── Title bar ─────────────────────────────────────────────────────────
+        title = QLabel("Quick Enroll")
+        title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {ACCENT};")
+        root.addWidget(title)
+
+        banner = QLabel("Fill in the required fields — defaults are applied automatically.")
+        banner.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
+        banner.setWordWrap(True)
+        root.addWidget(banner)
+
+        # ── Form ──────────────────────────────────────────────────────────────
+        self._form = QFormLayout()
+        self._form.setSpacing(12)
+        self._form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self._name = QLineEdit()
-        self._name.setPlaceholderText("Full name *")
-        form.addRow("Name *", self._name)
+        self._name.setPlaceholderText("Full name")
+        self._form.addRow("Name *", self._name)
 
         self._phone = QLineEdit()
-        self._phone.setPlaceholderText("+91 XXXXXXXXXX *")
-        form.addRow("Phone *", self._phone)
+        self._phone.setPlaceholderText("+91 XXXXXXXXXX")
+        self._form.addRow("Phone *", self._phone)
+
+        self._gender = QComboBox()
+        self._gender.addItems(["Male", "Female", "Other"])
+        self._form.addRow("Gender", self._gender)
 
         self._type = QComboBox()
         self._type.addItems(["Full-time", "Half-time"])
         self._type.currentIndexChanged.connect(self._on_type)
-        form.addRow("Type *", self._type)
+        self._form.addRow("Type *", self._type)
 
-        self._gender = QComboBox()
-        self._gender.addItems(["Male", "Female", "Other"])
-        form.addRow("Gender", self._gender)
-
-        # Seat (full-time)
+        # Full-time widgets
         avail = db.get_available_seats()
         self._seat = QComboBox()
-        self._seat.addItem("— No Seat —", None)
+        self._seat.addItem("-- Select Seat --", None)
         for sn in avail:
-            self._seat.addItem(str(sn), sn)
-        form.addRow("Seat", self._seat)
+            self._seat.addItem(f"Seat {sn}", sn)
+        self._form.addRow("Seat Number", self._seat)
 
-        # Shift (half-time)
-        self._shift = QComboBox()
-        self._shift.addItems(["Morning (6AM–2PM)", "Evening (2PM–11PM)"])
-        form.addRow("Shift", self._shift)
-
-        layout.addLayout(form)
-        self._on_type()
-
-        # Code preview
-        code = db.generate_student_code()
-        code_lbl = QLabel(f"Auto Student ID: <b>{code}</b>")
-        code_lbl.setStyleSheet(
-            f"color: {ACCENT}; background: transparent; font-size: 12px;"
+        self._fulltime_info = QLabel("Hours: 6:00 AM  –  11:00 PM  (Full Day)")
+        self._fulltime_info.setStyleSheet(
+            f"color: {SUCCESS}; font-size: 12px; font-style: italic;"
         )
-        code_lbl.setTextFormat(Qt.RichText)
-        layout.addWidget(code_lbl)
+        self._form.addRow("Schedule", self._fulltime_info)
 
+        # Half-time widgets
+        self._shift = QComboBox()
+        self._shift.addItems(["Morning  (6 AM – 2 PM)", "Evening  (2 PM – 11 PM)"])
+        self._form.addRow("Shift", self._shift)
+
+        root.addLayout(self._form)
+
+        # Student ID preview
+        code = db.generate_student_code()
+        id_lbl = QLabel(f"Auto Student ID will be:  <b style='color:{ACCENT};'>{code}</b>")
+        id_lbl.setTextFormat(Qt.RichText)
+        id_lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;")
+        root.addWidget(id_lbl)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("⚡ Quick Enroll")
-        save_btn.setObjectName("btn_success")
-        save_btn.clicked.connect(self._save)
+        btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(38)
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(save_btn)
+        save_btn = QPushButton("Enroll Student")
+        save_btn.setObjectName("btn_success")
+        save_btn.setFixedHeight(38)
+        save_btn.clicked.connect(self._save)
         btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        btn_row.addWidget(save_btn)
+        root.addLayout(btn_row)
+
+        self._on_type()
 
     def _on_type(self):
         is_full = self._type.currentText() == "Full-time"
-        self._seat.setEnabled(is_full)
-        self._shift.setEnabled(not is_full)
+        _form_row_visible(self._form, self._seat,          is_full)
+        _form_row_visible(self._form, self._fulltime_info, is_full)
+        _form_row_visible(self._form, self._shift,         not is_full)
+        self.adjustSize()
 
     def _save(self):
-        name = self._name.text().strip()
+        name  = self._name.text().strip()
         phone = self._phone.text().strip()
-        if not name or not phone:
-            QMessageBox.warning(self, "Required", "Name and Phone are required.")
+        if not name:
+            QMessageBox.warning(self, "Required", "Please enter the student's name.")
+            self._name.setFocus()
+            return
+        if not phone:
+            QMessageBox.warning(self, "Required", "Please enter the student's phone number.")
+            self._phone.setFocus()
             return
         stype = self._type.currentText()
         today = date.today()
-        next_due = _add_one_month(today)
         self._result_data = {
-            "name":                name,
-            "phone":               phone,
-            "gender":              self._gender.currentText(),
-            "student_type":        stype,
-            "shift":               ("Morning" if self._shift.currentIndex() == 0 else "Evening")
-                                   if stype == "Half-time" else None,
-            "seat_number":         self._seat.currentData() if stype == "Full-time" else None,
-            "join_date":           today.isoformat(),
-            "last_payment_date":   today.isoformat(),
-            "next_payment_date":   next_due.isoformat(),
-            "notes":               "",
+            "name":              name,
+            "phone":             phone,
+            "gender":            self._gender.currentText(),
+            "student_type":      stype,
+            "shift":             ("Morning" if self._shift.currentIndex() == 0 else "Evening")
+                                 if stype == "Half-time" else None,
+            "seat_number":       self._seat.currentData() if stype == "Full-time" else None,
+            "join_date":         today.isoformat(),
+            "last_payment_date": today.isoformat(),
+            "next_payment_date": _add_one_month(today).isoformat(),
+            "notes":             "",
         }
         self.accept()
 
@@ -164,108 +225,175 @@ class QuickAddStudentDialog(QDialog):
         return self._result_data
 
 
-# ─── Full Student Dialog ────────────────────────────────────────────────────
+# ─── Full Student Dialog ──────────────────────────────────────────────────────
 
 class StudentDialog(QDialog):
-    """Full add / edit student dialog."""
+    """Full add / edit dialog."""
+
     def __init__(self, student_data: dict = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add Student" if not student_data else "Edit Student")
-        self.setMinimumWidth(520)
-        self.setMinimumHeight(620)
         self._data = student_data or {}
+        self.setWindowTitle("Add New Student" if not student_data else "Edit Student")
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(640)
+        self.setModal(True)
         self._result_data = None
         self._build()
 
     def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
+        self.setStyleSheet(
+            f"QDialog {{ background-color: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
+            f"QLabel   {{ color: {TEXT_PRIMARY}; background: transparent; }}"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
+        # ── Coloured header strip ─────────────────────────────────────────────
+        header_frame = QFrame()
+        header_frame.setFixedHeight(60)
+        header_frame.setStyleSheet(f"background-color: {BG_HOVER}; border-radius: 0;")
+        hlay = QHBoxLayout(header_frame)
+        hlay.setContentsMargins(24, 0, 24, 0)
+        htitle = QLabel("Add New Student" if not self._data else f"Edit — {self._data.get('name','')}")
+        htitle.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {ACCENT};")
+
+        # Student code badge
+        code = self._data.get("student_code") or db.generate_student_code()
+        self._student_code = code
+        code_badge = QLabel(f"  ID: {code}  ")
+        code_badge.setStyleSheet(
+            f"background: {ACCENT}; color: white; border-radius: 4px; "
+            f"font-size: 12px; font-weight: bold; padding: 3px 8px;"
+        )
+        hlay.addWidget(htitle)
+        hlay.addStretch()
+        hlay.addWidget(code_badge)
+        outer.addWidget(header_frame)
+
+        # ── Scrollable form body ──────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
         inner = QWidget()
         inner.setStyleSheet("background: transparent;")
-        form = QFormLayout(inner)
-        form.setSpacing(12)
-        form.setLabelAlignment(Qt.AlignRight)
+        self._form = QFormLayout(inner)
+        self._form.setSpacing(14)
+        self._form.setContentsMargins(24, 20, 24, 20)
+        self._form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        # Student Code (display only)
-        code = self._data.get("student_code") or db.generate_student_code()
-        code_lbl = QLabel(f"<b style='color:{ACCENT};'>{code}</b>")
-        code_lbl.setTextFormat(Qt.RichText)
-        code_lbl.setStyleSheet("background: transparent;")
-        form.addRow("Student ID", code_lbl)
-        self._student_code = code
+        # ── Personal info section ─────────────────────────────────────────────
+        sec1 = QLabel("Personal Information")
+        sec1.setStyleSheet(
+            f"color: {ACCENT}; font-size: 13px; font-weight: bold; "
+            f"border-bottom: 1px solid {BG_HOVER}; padding-bottom: 4px;"
+        )
+        self._form.addRow(sec1)
 
         self._name = QLineEdit(self._data.get("name", ""))
         self._name.setPlaceholderText("Full name")
-        form.addRow("Name *", self._name)
+        self._form.addRow("Name *", self._name)
 
         self._phone = QLineEdit(self._data.get("phone", ""))
         self._phone.setPlaceholderText("+91 XXXXXXXXXX")
-        form.addRow("Phone *", self._phone)
+        self._form.addRow("Phone *", self._phone)
 
         self._gender = QComboBox()
         self._gender.addItems(["Male", "Female", "Other"])
-        g = self._data.get("gender", "Male")
-        idx = {"Male": 0, "Female": 1, "Other": 2}.get(g, 0)
-        self._gender.setCurrentIndex(idx)
-        form.addRow("Gender", self._gender)
+        g_idx = {"Male": 0, "Female": 1, "Other": 2}.get(
+            self._data.get("gender", "Male"), 0
+        )
+        self._gender.setCurrentIndex(g_idx)
+        self._form.addRow("Gender", self._gender)
+
+        # ── Enrollment section ────────────────────────────────────────────────
+        sec2 = QLabel("Enrollment Details")
+        sec2.setStyleSheet(
+            f"color: {ACCENT}; font-size: 13px; font-weight: bold; "
+            f"border-bottom: 1px solid {BG_HOVER}; padding-bottom: 4px;"
+        )
+        self._form.addRow(sec2)
 
         self._type = QComboBox()
         self._type.addItems(["Full-time", "Half-time"])
-        idx = 0 if self._data.get("student_type", "Full-time") == "Full-time" else 1
-        self._type.setCurrentIndex(idx)
+        t_idx = 0 if self._data.get("student_type", "Full-time") == "Full-time" else 1
+        self._type.setCurrentIndex(t_idx)
         self._type.currentIndexChanged.connect(self._on_type_change)
-        form.addRow("Type *", self._type)
+        self._form.addRow("Type *", self._type)
 
-        self._shift = QComboBox()
-        self._shift.addItems(["Morning (6AM–2PM)", "Evening (2PM–11PM)"])
-        if self._data.get("shift") and "Evening" in self._data.get("shift", ""):
-            self._shift.setCurrentIndex(1)
-        form.addRow("Shift", self._shift)
-
+        # Full-time: seat + schedule label
         avail = db.get_available_seats()
         cur_seat = self._data.get("seat_number")
         if cur_seat and cur_seat not in avail:
             avail.insert(0, cur_seat)
         self._seat = QComboBox()
-        self._seat.addItem("— None —", None)
+        self._seat.addItem("-- Select Seat --", None)
         for sn in avail:
-            self._seat.addItem(str(sn), sn)
+            self._seat.addItem(f"Seat {sn}", sn)
         if cur_seat:
             for i in range(self._seat.count()):
                 if self._seat.itemData(i) == cur_seat:
                     self._seat.setCurrentIndex(i)
                     break
-        form.addRow("Seat Number", self._seat)
+        self._form.addRow("Seat Number", self._seat)
 
-        # Fee configuration
+        self._fulltime_schedule = QLabel("6:00 AM  –  11:00 PM  (Full Day access)")
+        self._fulltime_schedule.setStyleSheet(
+            f"color: {SUCCESS}; font-size: 12px; font-style: italic;"
+        )
+        self._form.addRow("Schedule", self._fulltime_schedule)
+
+        # Half-time: shift selector
+        self._shift = QComboBox()
+        self._shift.addItems(["Morning  (6 AM – 2 PM)", "Evening  (2 PM – 11 PM)"])
+        if "Evening" in (self._data.get("shift") or ""):
+            self._shift.setCurrentIndex(1)
+        self._form.addRow("Shift", self._shift)
+
+        # ── Fee section ───────────────────────────────────────────────────────
+        sec3 = QLabel("Fee Configuration")
+        sec3.setStyleSheet(
+            f"color: {ACCENT}; font-size: 13px; font-weight: bold; "
+            f"border-bottom: 1px solid {BG_HOVER}; padding-bottom: 4px;"
+        )
+        self._form.addRow(sec3)
+
         fee_row = QHBoxLayout()
-        self._use_custom_fee = QCheckBox("Override with custom fee")
+        self._use_custom_fee = QCheckBox("Override fee for this student")
         self._use_custom_fee.setChecked(self._data.get("custom_fee") is not None)
         self._use_custom_fee.stateChanged.connect(self._on_fee_toggle)
-        fee_row.addWidget(self._use_custom_fee)
         self._custom_fee_spin = QDoubleSpinBox()
         self._custom_fee_spin.setRange(0, 100000)
-        self._custom_fee_spin.setPrefix("₹ ")
+        self._custom_fee_spin.setPrefix("Rs. ")
         self._custom_fee_spin.setDecimals(0)
-        self._custom_fee_spin.setValue(
-            float(self._data.get("custom_fee") or
-                  (db.get_setting("fulltime_fee") if self._data.get("student_type") == "Full-time"
-                   else db.get_setting("halftime_fee")) or "500")
+        self._custom_fee_spin.setFixedWidth(130)
+        default_fee = (
+            self._data.get("custom_fee") or
+            db.get_setting("fulltime_fee" if self._data.get("student_type","Full-time") == "Full-time"
+                           else "halftime_fee") or "500"
         )
+        self._custom_fee_spin.setValue(float(default_fee))
+        fee_row.addWidget(self._use_custom_fee)
+        fee_row.addStretch()
         fee_row.addWidget(self._custom_fee_spin)
-        form.addRow("Monthly Fee", fee_row)
+        self._form.addRow("Monthly Fee", fee_row)
         self._on_fee_toggle()
+
+        # ── Payment dates section ─────────────────────────────────────────────
+        sec4 = QLabel("Payment Dates")
+        sec4.setStyleSheet(
+            f"color: {ACCENT}; font-size: 13px; font-weight: bold; "
+            f"border-bottom: 1px solid {BG_HOVER}; padding-bottom: 4px;"
+        )
+        self._form.addRow(sec4)
 
         self._join = QDateEdit()
         self._join.setCalendarPopup(True)
         self._join.setDisplayFormat("dd MMM yyyy")
         self._join.setDate(_qdate(self._data.get("join_date", _date_str(date.today()))))
-        form.addRow("Join Date *", self._join)
+        self._form.addRow("Join Date *", self._join)
 
         self._last_pay = QDateEdit()
         self._last_pay.setCalendarPopup(True)
@@ -273,43 +401,53 @@ class StudentDialog(QDialog):
         lp = self._data.get("last_payment_date") or _date_str(date.today())
         self._last_pay.setDate(_qdate(lp))
         self._last_pay.dateChanged.connect(self._update_next_payment)
-        form.addRow("Last Payment", self._last_pay)
+        self._form.addRow("Last Payment", self._last_pay)
 
         self._next_pay = QDateEdit()
         self._next_pay.setCalendarPopup(True)
         self._next_pay.setDisplayFormat("dd MMM yyyy")
-        np_str = self._data.get("next_payment_date")
-        if np_str:
-            self._next_pay.setDate(_qdate(np_str))
+        if self._data.get("next_payment_date"):
+            self._next_pay.setDate(_qdate(self._data["next_payment_date"]))
         else:
             self._update_next_payment()
-        form.addRow("Next Payment", self._next_pay)
+        self._form.addRow("Next Due Date", self._next_pay)
 
+        # ── Notes ─────────────────────────────────────────────────────────────
         self._notes = QTextEdit(self._data.get("notes", ""))
-        self._notes.setPlaceholderText("Optional notes…")
-        self._notes.setFixedHeight(70)
-        form.addRow("Notes", self._notes)
+        self._notes.setPlaceholderText("Optional notes about this student…")
+        self._notes.setFixedHeight(72)
+        self._form.addRow("Notes", self._notes)
 
         scroll.setWidget(inner)
-        layout.addWidget(scroll)
+        outer.addWidget(scroll)
 
-        btn_row = QHBoxLayout()
-        save_btn = QPushButton("💾 Save")
-        save_btn.setObjectName("btn_success")
-        save_btn.clicked.connect(self._save)
+        # ── Bottom button bar ─────────────────────────────────────────────────
+        bar = QFrame()
+        bar.setStyleSheet(f"background-color: {BG_CARD}; border-top: 1px solid {BG_HOVER};")
+        bar.setFixedHeight(60)
+        blay = QHBoxLayout(bar)
+        blay.setContentsMargins(24, 0, 24, 0)
+        blay.addStretch()
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(38)
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        save_btn = QPushButton("  Save Student  ")
+        save_btn.setObjectName("btn_success")
+        save_btn.setFixedHeight(38)
+        save_btn.clicked.connect(self._save)
+        blay.addWidget(cancel_btn)
+        blay.addSpacing(8)
+        blay.addWidget(save_btn)
+        outer.addWidget(bar)
 
+        # Apply initial type state
         self._on_type_change()
 
     def _on_type_change(self):
         is_full = self._type.currentText() == "Full-time"
-        self._shift.setEnabled(not is_full)
-        self._seat.setEnabled(is_full)
+        _form_row_visible(self._form, self._seat,              is_full)
+        _form_row_visible(self._form, self._fulltime_schedule, is_full)
+        _form_row_visible(self._form, self._shift,             not is_full)
 
     def _on_fee_toggle(self):
         self._custom_fee_spin.setEnabled(self._use_custom_fee.isChecked())
@@ -320,45 +458,48 @@ class StudentDialog(QDialog):
         self._next_pay.setDate(QDate(np.year, np.month, np.day))
 
     def _save(self):
-        name = self._name.text().strip()
+        name  = self._name.text().strip()
         phone = self._phone.text().strip()
-        if not name or not phone:
-            QMessageBox.warning(self, "Validation", "Name and Phone are required.")
+        if not name:
+            QMessageBox.warning(self, "Required", "Please enter the student's name.")
+            self._name.setFocus()
             return
+        if not phone:
+            QMessageBox.warning(self, "Required", "Please enter the student's phone number.")
+            self._phone.setFocus()
+            return
+
         stype = self._type.currentText()
-        shift = None
-        seat = None
+        shift = seat = None
+
         if stype == "Half-time":
             shift = "Morning" if self._shift.currentIndex() == 0 else "Evening"
         else:
             seat = self._seat.currentData()
-            # Conflict protection
-            existing_sid = self._data.get("id")
-            if seat and db.is_seat_taken(seat, exclude_student_id=existing_sid):
+            existing_id = self._data.get("id")
+            if seat and db.is_seat_taken(seat, exclude_student_id=existing_id):
                 QMessageBox.warning(
-                    self, "Seat Taken",
-                    f"Seat {seat} is already assigned to another student.\n"
+                    self, "Seat Already Taken",
+                    f"Seat {seat} is already occupied by another student.\n"
                     "Please choose a different seat."
                 )
                 return
 
-        custom_fee = None
-        if self._use_custom_fee.isChecked():
-            custom_fee = float(self._custom_fee_spin.value())
+        custom_fee = float(self._custom_fee_spin.value()) if self._use_custom_fee.isChecked() else None
 
         self._result_data = {
-            "student_code":       self._student_code,
-            "name":               name,
-            "phone":              phone,
-            "gender":             self._gender.currentText(),
-            "student_type":       stype,
-            "shift":              shift,
-            "seat_number":        seat,
-            "custom_fee":         custom_fee,
-            "join_date":          self._join.date().toPyDate().isoformat(),
-            "last_payment_date":  self._last_pay.date().toPyDate().isoformat(),
-            "next_payment_date":  self._next_pay.date().toPyDate().isoformat(),
-            "notes":              self._notes.toPlainText().strip(),
+            "student_code":      self._student_code,
+            "name":              name,
+            "phone":             phone,
+            "gender":            self._gender.currentText(),
+            "student_type":      stype,
+            "shift":             shift,
+            "seat_number":       seat,
+            "custom_fee":        custom_fee,
+            "join_date":         self._join.date().toPyDate().isoformat(),
+            "last_payment_date": self._last_pay.date().toPyDate().isoformat(),
+            "next_payment_date": self._next_pay.date().toPyDate().isoformat(),
+            "notes":             self._notes.toPlainText().strip(),
         }
         self.accept()
 
@@ -366,39 +507,51 @@ class StudentDialog(QDialog):
         return self._result_data
 
 
-# ─── Payment Dialog ──────────────────────────────────────────────────────────
+# ─── Payment Dialog ───────────────────────────────────────────────────────────
 
 class PaymentDialog(QDialog):
     def __init__(self, student: dict, parent=None):
         super().__init__(parent)
         code = student.get("student_code") or ""
-        self.setWindowTitle(f"Record Payment – {student['name']} [{code}]")
-        self.setMinimumWidth(420)
+        self.setWindowTitle(f"Record Payment  [{student['name']}]")
+        self.setMinimumWidth(440)
+        self.setModal(True)
         self._student = student
         self._build()
 
     def _build(self):
+        self.setStyleSheet(
+            f"QDialog {{ background-color: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
+            f"QLabel   {{ color: {TEXT_PRIMARY}; background: transparent; }}"
+        )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(14)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(16)
 
         code = self._student.get("student_code") or "–"
+        fee  = db.get_effective_fee(self._student)
         info = QLabel(
-            f"<b>{self._student['name']}</b>  [{code}]  |  {self._student['phone']}<br>"
-            f"Type: {self._student['student_type']}  |  "
-            f"Effective Fee: ₹{db.get_effective_fee(self._student):,.0f}"
+            f"<b style='font-size:14px;'>{self._student['name']}</b>"
+            f"  <span style='color:{ACCENT};'>[{code}]</span><br>"
+            f"<span style='color:{TEXT_SECONDARY};'>"
+            f"{self._student['student_type']}  |  "
+            f"Effective Fee: Rs. {fee:,.0f}</span>"
         )
-        info.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent;")
         info.setTextFormat(Qt.RichText)
         layout.addWidget(info)
 
-        form = QFormLayout()
-        form.setSpacing(10)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet(f"color: {BG_HOVER};")
+        layout.addWidget(sep)
 
-        fee = db.get_effective_fee(self._student)
+        form = QFormLayout()
+        form.setSpacing(12)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
         self._amount = QLineEdit(str(int(fee)))
-        self._amount.setPlaceholderText("Amount")
-        form.addRow("Amount (₹)", self._amount)
+        self._amount.setPlaceholderText("Amount in rupees")
+        form.addRow("Amount (Rs.) *", self._amount)
 
         self._pay_date = QDateEdit()
         self._pay_date.setCalendarPopup(True)
@@ -414,19 +567,23 @@ class PaymentDialog(QDialog):
         self._update_next()
 
         self._note = QLineEdit()
-        self._note.setPlaceholderText("Optional note")
+        self._note.setPlaceholderText("e.g. Cash, UPI, etc.")
         form.addRow("Note", self._note)
 
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        save_btn = QPushButton("✅ Confirm Payment")
-        save_btn.setObjectName("btn_success")
-        save_btn.clicked.connect(self._save)
+        btn_row.addStretch()
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(36)
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(save_btn)
+        confirm_btn = QPushButton("  Confirm Payment  ")
+        confirm_btn.setObjectName("btn_success")
+        confirm_btn.setFixedHeight(36)
+        confirm_btn.clicked.connect(self._save)
         btn_row.addWidget(cancel_btn)
+        btn_row.addSpacing(8)
+        btn_row.addWidget(confirm_btn)
         layout.addLayout(btn_row)
 
     def _update_next(self):
@@ -438,16 +595,19 @@ class PaymentDialog(QDialog):
         try:
             amount = float(self._amount.text())
         except ValueError:
-            QMessageBox.warning(self, "Invalid", "Enter a valid amount.")
+            QMessageBox.warning(self, "Invalid Amount", "Please enter a valid number.")
             return
-        pay_date  = self._pay_date.date().toPyDate().isoformat()
-        next_date = self._next_date.date().toPyDate().isoformat()
-        note      = self._note.text().strip()
-        db.record_payment(self._student["id"], amount, pay_date, next_date, note)
+        db.record_payment(
+            self._student["id"],
+            amount,
+            self._pay_date.date().toPyDate().isoformat(),
+            self._next_date.date().toPyDate().isoformat(),
+            self._note.text().strip(),
+        )
         self.accept()
 
 
-# ─── Main Widget ─────────────────────────────────────────────────────────────
+# ─── Main Widget ──────────────────────────────────────────────────────────────
 
 class StudentManagementWidget(QWidget):
     data_changed = pyqtSignal()
@@ -464,20 +624,22 @@ class StudentManagementWidget(QWidget):
 
         # ── Header ─────────────────────────────────────────────────────────────
         header = QHBoxLayout()
-        title = QLabel("👥 Student Management")
+        title = QLabel("Student Management")
         title.setStyleSheet(
             f"font-size: 22px; font-weight: bold; color: {TEXT_PRIMARY}; background: transparent;"
         )
         header.addWidget(title)
         header.addStretch()
 
-        quick_btn = QPushButton("⚡ Quick Add")
+        quick_btn = QPushButton("  Quick Add  ")
         quick_btn.setObjectName("btn_warning")
+        quick_btn.setFixedHeight(38)
         quick_btn.clicked.connect(self._quick_add)
         header.addWidget(quick_btn)
 
-        add_btn = QPushButton("➕ Add Student")
+        add_btn = QPushButton("  Add Student  ")
         add_btn.setObjectName("btn_primary")
+        add_btn.setFixedHeight(38)
         add_btn.clicked.connect(self._add_student)
         header.addWidget(add_btn)
         root.addLayout(header)
@@ -485,14 +647,14 @@ class StudentManagementWidget(QWidget):
         # ── Search / filter bar ───────────────────────────────────────────────
         search_row = QHBoxLayout()
         self._search = QLineEdit()
-        self._search.setPlaceholderText("🔍  Search by name, phone, ID, or seat…")
+        self._search.setPlaceholderText("Search by name, phone, ID, or seat…")
         self._search.textChanged.connect(self.refresh)
-        search_row.addWidget(self._search)
+        search_row.addWidget(self._search, 3)
 
         for lbl, attr, items in [
-            ("Type:", "_filter_type", ["All", "Full-time", "Half-time"]),
-            ("Gender:", "_filter_gender", ["All", "Male", "Female", "Other"]),
-            ("Status:", "_filter_status", ["All", "Paid", "Due Soon", "Due Today", "Overdue"]),
+            ("Type:",   "_filter_type",   ["All Types", "Full-time", "Half-time"]),
+            ("Gender:", "_filter_gender", ["All Genders", "Male", "Female", "Other"]),
+            ("Status:", "_filter_status", ["All Status", "Paid", "Due Soon", "Due Today", "Overdue"]),
         ]:
             l = QLabel(lbl)
             l.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent;")
@@ -500,7 +662,7 @@ class StudentManagementWidget(QWidget):
             combo.addItems(items)
             combo.currentIndexChanged.connect(self.refresh)
             search_row.addWidget(l)
-            search_row.addWidget(combo)
+            search_row.addWidget(combo, 1)
             setattr(self, attr, combo)
 
         root.addLayout(search_row)
@@ -509,8 +671,8 @@ class StudentManagementWidget(QWidget):
         self._table = QTableWidget()
         self._table.setColumnCount(11)
         self._table.setHorizontalHeaderLabels([
-            "ID", "Name", "Phone", "Gender", "Type", "Seat/Shift",
-            "Fee (₹)", "Last Paid", "Next Due", "Status", "Actions"
+            "ID", "Name", "Phone", "Gender", "Type", "Seat / Shift",
+            "Fee (Rs.)", "Last Paid", "Next Due", "Status", "Actions"
         ])
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -518,45 +680,42 @@ class StudentManagementWidget(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
-        self._table.setColumnWidth(0,  60)
+        self._table.setColumnWidth(0,  70)
         self._table.setColumnWidth(2, 120)
-        self._table.setColumnWidth(3,  75)
+        self._table.setColumnWidth(3,  70)
         self._table.setColumnWidth(4,  85)
         self._table.setColumnWidth(5, 110)
-        self._table.setColumnWidth(6,  75)
+        self._table.setColumnWidth(6,  80)
         self._table.setColumnWidth(7, 100)
         self._table.setColumnWidth(8, 100)
-        self._table.setColumnWidth(9,  95)
-        self._table.setColumnWidth(10, 190)
+        self._table.setColumnWidth(9,  85)
+        self._table.setColumnWidth(10, 260)
         root.addWidget(self._table)
 
-        # Count bar
         self._count_lbl = QLabel("")
         self._count_lbl.setStyleSheet(
             f"color: {TEXT_SECONDARY}; font-size: 12px; background: transparent;"
         )
         root.addWidget(self._count_lbl)
 
+    # ── refresh ───────────────────────────────────────────────────────────────
+
     def refresh(self):
-        search = self._search.text().strip() if hasattr(self, "_search") else ""
+        search  = self._search.text().strip() if hasattr(self, "_search") else ""
         students = db.get_all_students(search)
 
-        ftype   = self._filter_type.currentText()   if hasattr(self, "_filter_type")   else "All"
-        fgender = self._filter_gender.currentText() if hasattr(self, "_filter_gender") else "All"
-        fstatus = self._filter_status.currentText() if hasattr(self, "_filter_status") else "All"
+        ftype   = self._filter_type.currentText()   if hasattr(self, "_filter_type")   else "All Types"
+        fgender = self._filter_gender.currentText() if hasattr(self, "_filter_gender") else "All Genders"
+        fstatus = self._filter_status.currentText() if hasattr(self, "_filter_status") else "All Status"
 
-        if ftype != "All":
+        if ftype != "All Types":
             students = [s for s in students if s["student_type"] == ftype]
-        if fgender != "All":
+        if fgender != "All Genders":
             students = [s for s in students if (s.get("gender") or "Male") == fgender]
-        if fstatus != "All":
-            status_key_map = {
-                "Paid":      "paid",
-                "Due Soon":  "due_soon",
-                "Due Today": "due_today",
-                "Overdue":   "overdue",
-            }
-            target = status_key_map.get(fstatus)
+        if fstatus not in ("All Status", "All"):
+            key_map = {"Paid": "paid", "Due Soon": "due_soon",
+                       "Due Today": "due_today", "Overdue": "overdue"}
+            target = key_map.get(fstatus)
             if target:
                 students = [s for s in students if db.get_payment_status(s) == target]
 
@@ -564,11 +723,11 @@ class StudentManagementWidget(QWidget):
         self._count_lbl.setText(f"Showing {len(students)} student(s)")
 
         for row, s in enumerate(students):
-            self._table.setRowHeight(row, 46)
-            status = db.get_payment_status(s)
+            self._table.setRowHeight(row, 48)
+            status       = db.get_payment_status(s)
             status_color = STATUS_COLORS.get(status, SUCCESS)
-            status_label = STATUS_LABELS.get(status, "✅ Paid")
-            fee = db.get_effective_fee(s)
+            status_label = STATUS_LABELS.get(status, "Paid")
+            fee  = db.get_effective_fee(s)
             code = s.get("student_code") or "–"
 
             row_data = [
@@ -578,49 +737,48 @@ class StudentManagementWidget(QWidget):
                 s.get("gender") or "–",
                 s["student_type"],
                 (f"Shift: {s['shift']}" if s["student_type"] == "Half-time"
-                 else (f"Seat: {s['seat_number']}" if s["seat_number"] else "No Seat")),
-                f"₹{fee:,.0f}",
+                 else (f"Seat {s['seat_number']}" if s["seat_number"] else "No Seat")),
+                f"Rs. {fee:,.0f}",
                 s.get("last_payment_date") or "–",
                 s.get("next_payment_date") or "–",
             ]
             for col, text in enumerate(row_data):
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-                # Colour next-due cell by payment status
                 if col == 8:
                     item.setForeground(QColor(status_color))
                 self._table.setItem(row, col, item)
 
-            # Status badge
-            status_item = QTableWidgetItem(status_label)
-            status_item.setForeground(QColor(status_color))
-            status_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignCenter)
-            self._table.setItem(row, 9, status_item)
+            # Status cell
+            s_item = QTableWidgetItem(status_label)
+            s_item.setForeground(QColor(status_color))
+            s_item.setTextAlignment(Qt.AlignVCenter | Qt.AlignCenter)
+            self._table.setItem(row, 9, s_item)
 
             # Action buttons
-            cell_widget = QWidget()
-            cell_widget.setStyleSheet("background: transparent;")
-            btn_layout = QHBoxLayout(cell_widget)
-            btn_layout.setContentsMargins(4, 4, 4, 4)
-            btn_layout.setSpacing(4)
+            cell = QWidget()
+            cell.setStyleSheet("background: transparent;")
+            blay = QHBoxLayout(cell)
+            blay.setContentsMargins(4, 6, 4, 6)
+            blay.setSpacing(5)
 
-            for icon, tip, color, cb in [
-                ("✏️", "Edit",          BG_HOVER, lambda _, sid=s["id"]: self._edit_student(sid)),
-                ("💰", "Record payment", BG_HOVER, lambda _, sid=s["id"]: self._record_payment(sid)),
-                ("📱", "WhatsApp",       BG_HOVER, lambda _, sid=s["id"]: self._open_whatsapp(sid)),
-                ("🗑️", "Remove",         BG_HOVER, lambda _, sid=s["id"]: self._remove_student(sid)),
-            ]:
-                btn = QPushButton(icon)
-                btn.setToolTip(tip)
-                btn.setFixedSize(34, 34)
-                btn.setStyleSheet(
-                    f"background-color: {color}; border-radius: 6px; "
-                    f"color: white; font-size: 13px;"
-                )
-                btn.clicked.connect(cb)
-                btn_layout.addWidget(btn)
-            btn_layout.addStretch()
-            self._table.setCellWidget(row, 10, cell_widget)
+            edit_btn = _action_btn("Edit",   "edit",   "Edit this student")
+            pay_btn  = _action_btn("Pay",    "pay",    "Record a payment")
+            chat_btn = _action_btn("Chat",   "chat",   "Open WhatsApp chat")
+            del_btn  = _action_btn("Remove", "remove", "Remove student")
+
+            sid = s["id"]
+            edit_btn.clicked.connect(lambda _, i=sid: self._edit_student(i))
+            pay_btn.clicked.connect( lambda _, i=sid: self._record_payment(i))
+            chat_btn.clicked.connect(lambda _, i=sid: self._open_whatsapp(i))
+            del_btn.clicked.connect( lambda _, i=sid: self._remove_student(i))
+
+            for b in (edit_btn, pay_btn, chat_btn, del_btn):
+                blay.addWidget(b)
+            blay.addStretch()
+            self._table.setCellWidget(row, 10, cell)
+
+    # ── actions ───────────────────────────────────────────────────────────────
 
     def _quick_add(self):
         dlg = QuickAddStudentDialog(parent=self)
@@ -667,18 +825,20 @@ class StudentManagementWidget(QWidget):
             return
         from utils.whatsapp import open_whatsapp_chat, format_reminder_message
         tmpl = db.get_setting("whatsapp_reminder_message") or ""
-        msg = format_reminder_message(tmpl, student["name"], student.get("next_payment_date") or "")
+        msg  = format_reminder_message(tmpl, student["name"],
+                                       student.get("next_payment_date") or "")
         open_whatsapp_chat(student["phone"], msg)
 
     def _remove_student(self, student_id: int):
         student = db.get_student(student_id)
         if not student:
             return
+        code = student.get("student_code") or "—"
         reply = QMessageBox.question(
             self, "Remove Student",
-            f"Remove <b>{student['name']}</b> [{student.get('student_code','—')}]?<br><br>"
-            "Their record will be archived and a WhatsApp message will be sent.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            f"Are you sure you want to remove <b>{student['name']}</b> [{code}]?<br><br>"
+            "The record will be archived in the Removed Students section.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
             phone = db.remove_student(student_id)
@@ -688,12 +848,11 @@ class StudentManagementWidget(QWidget):
                     msg_tmpl = db.get_setting("whatsapp_removal_message") or ""
                     msg = format_removal_message(msg_tmpl, student["name"])
                     send_message(phone, msg)
-                    QMessageBox.information(
-                        self, "Removed",
-                        f"{student['name']} has been removed.\n"
-                        "WhatsApp removal message queued."
-                    )
                 except Exception:
-                    QMessageBox.information(self, "Removed", f"{student['name']} has been removed.")
+                    pass
+            QMessageBox.information(
+                self, "Removed",
+                f"{student['name']} has been removed and archived."
+            )
             self.refresh()
             self.data_changed.emit()
