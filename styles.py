@@ -131,19 +131,57 @@ QComboBox {{
     padding: 8px 10px;
     font-size: 13px;
     min-width: 120px;
+    selection-background-color: {ACCENT};
+    selection-color: white;
 }}
 QComboBox:hover {{
     border-color: {ACCENT};
 }}
+QComboBox:on {{
+    border-color: {ACCENT};
+}}
+QComboBox:!editable, QComboBox::drop-down:editable {{
+    background-color: {BG_CARD};
+}}
+QComboBox:!editable:on, QComboBox::drop-down:editable:on {{
+    background-color: {BG_HOVER};
+}}
 QComboBox::drop-down {{
     border: none;
     width: 24px;
+    background-color: transparent;
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+}}
+QComboBox::down-arrow {{
+    image: none;
+    width: 10px;
+    height: 10px;
+    background-color: {TEXT_SECONDARY};
+    border-radius: 2px;
 }}
 QComboBox QAbstractItemView {{
     background-color: {BG_PANEL};
     color: {TEXT_PRIMARY};
     border: 1px solid {BG_HOVER};
+    outline: none;
     selection-background-color: {ACCENT};
+    selection-color: white;
+}}
+QComboBox QAbstractItemView::item {{
+    color: {TEXT_PRIMARY};
+    background-color: {BG_PANEL};
+    padding: 6px 10px;
+    min-height: 24px;
+    border: none;
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {ACCENT};
+    color: white;
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {BG_HOVER};
+    color: {TEXT_PRIMARY};
 }}
 
 QDateEdit {{
@@ -152,15 +190,37 @@ QDateEdit {{
     border: 1px solid #2A2A4A;
     border-radius: 6px;
     padding: 8px 10px;
+    selection-background-color: {ACCENT};
+    selection-color: white;
 }}
 QDateEdit:focus {{ border-color: {ACCENT}; }}
 QDateEdit::drop-down {{
     border: none;
     width: 24px;
+    background-color: {BG_HOVER};
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+}}
+QDateEdit::down-arrow {{
+    image: none;
+    width: 8px;
+    height: 8px;
+    background-color: {TEXT_SECONDARY};
+    border-radius: 2px;
 }}
 QCalendarWidget {{
     background-color: {BG_PANEL};
     color: {TEXT_PRIMARY};
+}}
+QCalendarWidget QWidget {{
+    background-color: {BG_PANEL};
+    color: {TEXT_PRIMARY};
+}}
+QCalendarWidget QAbstractItemView {{
+    background-color: {BG_PANEL};
+    color: {TEXT_PRIMARY};
+    selection-background-color: {ACCENT};
+    selection-color: white;
 }}
 
 QLabel {{
@@ -287,8 +347,80 @@ QSpinBox, QDoubleSpinBox {{
     border: 1px solid #2A2A4A;
     border-radius: 6px;
     padding: 8px 10px;
+    selection-background-color: {ACCENT};
+    selection-color: white;
 }}
 QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {ACCENT}; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    background-color: {BG_HOVER};
+    border: none;
+    width: 18px;
+    border-top-right-radius: 6px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    background-color: {BG_HOVER};
+    border: none;
+    width: 18px;
+    border-bottom-right-radius: 6px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background-color: {ACCENT};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: none;
+    width: 6px;
+    height: 6px;
+    background-color: {TEXT_PRIMARY};
+    border-radius: 1px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: none;
+    width: 6px;
+    height: 6px;
+    background-color: {TEXT_PRIMARY};
+    border-radius: 1px;
+}}
+
+QTimeEdit {{
+    background-color: {BG_CARD};
+    color: {TEXT_PRIMARY};
+    border: 1px solid #2A2A4A;
+    border-radius: 6px;
+    padding: 8px 10px;
+    selection-background-color: {ACCENT};
+    selection-color: white;
+}}
+QTimeEdit:focus {{ border-color: {ACCENT}; }}
+QTimeEdit::up-button {{
+    background-color: {BG_HOVER};
+    border: none;
+    width: 18px;
+    border-top-right-radius: 6px;
+}}
+QTimeEdit::down-button {{
+    background-color: {BG_HOVER};
+    border: none;
+    width: 18px;
+    border-bottom-right-radius: 6px;
+}}
+QTimeEdit::up-button:hover, QTimeEdit::down-button:hover {{
+    background-color: {ACCENT};
+}}
+QTimeEdit::up-arrow {{
+    image: none;
+    width: 6px;
+    height: 6px;
+    background-color: {TEXT_PRIMARY};
+    border-radius: 1px;
+}}
+QTimeEdit::down-arrow {{
+    image: none;
+    width: 6px;
+    height: 6px;
+    background-color: {TEXT_PRIMARY};
+    border-radius: 1px;
+}}
 
 QTabWidget::pane {{
     border: 1px solid #2A2A4A;
