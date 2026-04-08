@@ -1,27 +1,96 @@
 import sqlite3
 import os
 import sys
+import shutil
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any
 
-# When running as a PyInstaller frozen binary, keep the database next to the
-# actual executable so data persists between launches (not in _MEIPASS temp dir).
-if getattr(sys, "frozen", False):
-    _BASE_DIR = os.path.dirname(sys.executable)
-else:
-    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_NAME = "StudyPoint"
 
-DB_PATH = os.path.join(_BASE_DIR, "library.db")
+
+def _get_user_data_dir() -> str:
+    """Return a per-user app data directory based on the current OS."""
+    if sys.platform.startswith("win"):
+        base = os.getenv("APPDATA") or os.getenv("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, APP_NAME)
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME)
+    base = os.getenv("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, APP_NAME)
+
+
+# Legacy location used by previous versions (next to executable / source file).
+if getattr(sys, "frozen", False):
+    _LEGACY_BASE_DIR = os.path.dirname(sys.executable)
+else:
+    _LEGACY_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+APP_DATA_DIR = _get_user_data_dir()
+DB_PATH = os.path.join(APP_DATA_DIR, "library.db")
+LEGACY_DB_PATH = os.path.join(_LEGACY_BASE_DIR, "library.db")
+
+
+def _ensure_data_dir():
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+
+def _migrate_legacy_db_if_needed():
+    """One-time copy from old install-folder DB to per-user app-data DB."""
+    _ensure_data_dir()
+    if os.path.exists(DB_PATH):
+        return
+    if os.path.abspath(LEGACY_DB_PATH) == os.path.abspath(DB_PATH):
+        return
+    if os.path.exists(LEGACY_DB_PATH):
+        shutil.copy2(LEGACY_DB_PATH, DB_PATH)
+
+
+def _requires_schema_migration() -> bool:
+    """Check whether known migration columns are missing."""
+    if not os.path.exists(DB_PATH):
+        return False
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        students_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(students)").fetchall()
+        }
+        removed_cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(removed_students)").fetchall()
+        }
+        conn.close()
+    except sqlite3.Error:
+        return False
+
+    required = {"student_code", "gender", "custom_fee"}
+    return not required.issubset(students_cols) or not required.issubset(removed_cols)
+
+
+def _backup_existing_db(prefix: str = "library_pre_migration") -> Optional[str]:
+    """Create a timestamped backup in app data directory and return its path."""
+    if not os.path.exists(DB_PATH):
+        return None
+    _ensure_data_dir()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(APP_DATA_DIR, f"{prefix}_{ts}.db")
+    shutil.copy2(DB_PATH, backup_path)
+    return backup_path
 
 
 def get_connection():
+    _ensure_data_dir()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db():
+    _migrate_legacy_db_if_needed()
+    if _requires_schema_migration():
+        _backup_existing_db()
+
     conn = get_connection()
     c = conn.cursor()
 
@@ -204,6 +273,9 @@ def _migrate_columns(conn):
         ("student_code", "TEXT"),
         ("gender",       "TEXT DEFAULT 'Male'"),
         ("custom_fee",   "REAL"),
+        ("is_active",    "INTEGER NOT NULL DEFAULT 1"),
+        ("removed_at",   "TEXT"),
+        ("removal_reason", "TEXT DEFAULT ''"),
     ]
     for col, typedef in migrations:
         if col not in existing:
@@ -414,30 +486,24 @@ def update_student(student_id: int, data: Dict[str, Any]):
 
 
 def remove_student(student_id: int, reason: str = "") -> Optional[str]:
-    """Archive student, free seat, and return phone number."""
+    """Archive student by marking inactive, free seat, and return phone number."""
     conn = get_connection()
     row = conn.execute("SELECT * FROM students WHERE id = ?", (student_id,)).fetchone()
     if not row:
         conn.close()
         return None
-    conn.execute("""
-        INSERT INTO removed_students
-            (original_id, student_code, name, phone, gender, student_type, shift,
-             seat_number, custom_fee, join_date, last_payment_date, next_payment_date,
-             notes, removal_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        student_id, row["student_code"], row["name"], row["phone"],
-        row["gender"] if "gender" in row.keys() else "Male",
-        row["student_type"], row["shift"], row["seat_number"],
-        row["custom_fee"] if "custom_fee" in row.keys() else None,
-        row["join_date"], row["last_payment_date"], row["next_payment_date"],
-        row["notes"], reason
-    ))
     if row["seat_number"]:
         conn.execute("UPDATE seats SET student_id = NULL WHERE seat_number = ?", (row["seat_number"],))
-    conn.execute("DELETE FROM payments WHERE student_id = ?", (student_id,))
-    conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
+    conn.execute(
+        """
+        UPDATE students
+        SET is_active = 0,
+            removed_at = ?,
+            removal_reason = ?
+        WHERE id = ?
+        """,
+        (datetime.now().isoformat(), reason, student_id)
+    )
     phone = row["phone"]
     conn.commit()
     conn.close()
@@ -450,11 +516,11 @@ def get_all_students(search: str = "") -> List[Dict]:
         like = f"%{search}%"
         rows = conn.execute("""
             SELECT * FROM students
-            WHERE name LIKE ? OR phone LIKE ? OR CAST(seat_number AS TEXT) LIKE ?
+            WHERE is_active = 1 AND (name LIKE ? OR phone LIKE ? OR CAST(seat_number AS TEXT) LIKE ?)
             ORDER BY name
         """, (like, like, like)).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM students ORDER BY name").fetchall()
+        rows = conn.execute("SELECT * FROM students WHERE is_active = 1 ORDER BY name").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -471,7 +537,7 @@ def get_overdue_students() -> List[Dict]:
     conn = get_connection()
     rows = conn.execute("""
         SELECT * FROM students
-        WHERE next_payment_date IS NOT NULL AND next_payment_date <= ?
+        WHERE is_active = 1 AND next_payment_date IS NOT NULL AND next_payment_date <= ?
         ORDER BY next_payment_date
     """, (today,)).fetchall()
     conn.close()
@@ -483,7 +549,7 @@ def get_due_today_students() -> List[Dict]:
     conn = get_connection()
     rows = conn.execute("""
         SELECT * FROM students
-        WHERE next_payment_date = ?
+        WHERE is_active = 1 AND next_payment_date = ?
     """, (today,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -527,26 +593,122 @@ def delete_payment(payment_id: int):
 
 def get_removed_students(search: str = "") -> List[Dict]:
     conn = get_connection()
+    like = f"%{search}%"
+
     if search:
-        like = f"%{search}%"
-        rows = conn.execute("""
-            SELECT * FROM removed_students
+        inactive_rows = conn.execute(
+            """
+            SELECT id, student_code, name, phone, gender, student_type, shift, seat_number,
+                   custom_fee, join_date, last_payment_date, next_payment_date, notes,
+                   removed_at, removal_reason
+            FROM students
+            WHERE is_active = 0 AND (name LIKE ? OR phone LIKE ?)
+            ORDER BY removed_at DESC
+            """,
+            (like, like)
+        ).fetchall()
+        legacy_rows = conn.execute(
+            """
+            SELECT id, student_code, name, phone, gender, student_type, shift, seat_number,
+                   custom_fee, join_date, last_payment_date, next_payment_date, notes,
+                   removed_at, removal_reason
+            FROM removed_students
             WHERE name LIKE ? OR phone LIKE ?
             ORDER BY removed_at DESC
-        """, (like, like)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM removed_students ORDER BY removed_at DESC"
+            """,
+            (like, like)
         ).fetchall()
+    else:
+        inactive_rows = conn.execute(
+            """
+            SELECT id, student_code, name, phone, gender, student_type, shift, seat_number,
+                   custom_fee, join_date, last_payment_date, next_payment_date, notes,
+                   removed_at, removal_reason
+            FROM students
+            WHERE is_active = 0
+            ORDER BY removed_at DESC
+            """
+        ).fetchall()
+        legacy_rows = conn.execute(
+            """
+            SELECT id, student_code, name, phone, gender, student_type, shift, seat_number,
+                   custom_fee, join_date, last_payment_date, next_payment_date, notes,
+                   removed_at, removal_reason
+            FROM removed_students
+            ORDER BY removed_at DESC
+            """
+        ).fetchall()
+
+    rows: List[Dict[str, Any]] = []
+    for r in inactive_rows:
+        d = dict(r)
+        d["archive_source"] = "inactive"
+        rows.append(d)
+    for r in legacy_rows:
+        d = dict(r)
+        d["archive_source"] = "legacy"
+        rows.append(d)
+
+    rows.sort(key=lambda r: r.get("removed_at") or "", reverse=True)
     conn.close()
-    return [dict(r) for r in rows]
+    return rows
 
 
-def delete_removed_student_record(record_id: int):
+def delete_removed_student_record(record_id: int, source: str = "legacy"):
     conn = get_connection()
-    conn.execute("DELETE FROM removed_students WHERE id = ?", (record_id,))
+    if source == "inactive":
+        conn.execute("DELETE FROM payments WHERE student_id = ?", (record_id,))
+        conn.execute("DELETE FROM students WHERE id = ? AND is_active = 0", (record_id,))
+    else:
+        conn.execute("DELETE FROM removed_students WHERE id = ?", (record_id,))
     conn.commit()
     conn.close()
+
+
+def readmit_student(student_id: int) -> Dict[str, Any]:
+    """Reactivate an archived student and re-attach seat if still free."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, is_active, student_type, seat_number FROM students WHERE id = ?",
+        (student_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"ok": False, "reason": "not_found", "seat_conflict": False}
+
+    if int(row["is_active"] or 0) == 1:
+        conn.close()
+        return {"ok": False, "reason": "already_active", "seat_conflict": False}
+
+    seat_conflict = False
+    seat_number = row["seat_number"]
+    if row["student_type"] == "Full-time" and seat_number:
+        seat_row = conn.execute(
+            "SELECT student_id FROM seats WHERE seat_number = ?",
+            (seat_number,)
+        ).fetchone()
+        if seat_row and seat_row["student_id"] in (None, row["id"]):
+            conn.execute(
+                "UPDATE seats SET student_id = ? WHERE seat_number = ?",
+                (row["id"], seat_number)
+            )
+        else:
+            seat_conflict = True
+            conn.execute("UPDATE students SET seat_number = NULL WHERE id = ?", (row["id"],))
+
+    conn.execute(
+        """
+        UPDATE students
+        SET is_active = 1,
+            removed_at = NULL,
+            removal_reason = ''
+        WHERE id = ?
+        """,
+        (row["id"],)
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "reason": "", "seat_conflict": seat_conflict}
 
 
 # ─── Dashboard Stats ─────────────────────────────────────────────────────────
@@ -558,23 +720,23 @@ def get_dashboard_stats() -> Dict[str, Any]:
     reserved = int(conn.execute("SELECT COUNT(*) FROM seats WHERE is_reserved_women = 1").fetchone()[0])
     available = total_seats - occupied
     fulltime_count = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE student_type = 'Full-time'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND student_type = 'Full-time'"
     ).fetchone()[0])
     halftime_count = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE student_type = 'Half-time'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND student_type = 'Half-time'"
     ).fetchone()[0])
     male_count = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE gender = 'Male'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND gender = 'Male'"
     ).fetchone()[0])
     female_count = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE gender = 'Female'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND gender = 'Female'"
     ).fetchone()[0])
     today = date.today().isoformat()
     due_today = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE next_payment_date = ?", (today,)
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND next_payment_date = ?", (today,)
     ).fetchone()[0])
     overdue = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE next_payment_date < ?", (today,)
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND next_payment_date < ?", (today,)
     ).fetchone()[0])
 
     # Revenue: current month
@@ -595,7 +757,7 @@ def get_dashboard_stats() -> Dict[str, Any]:
 
     # Outstanding: sum of fees for all students who are overdue (estimate)
     overdue_students = conn.execute(
-        "SELECT COUNT(*) FROM students WHERE next_payment_date < ?", (today,)
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND next_payment_date < ?", (today,)
     ).fetchone()[0]
     fulltime_fee = float(get_setting("fulltime_fee") or "600")
     halftime_fee = float(get_setting("halftime_fee") or "400")
@@ -628,7 +790,7 @@ def get_students_due_in_days(days: int) -> List[Dict]:
     target = (date.today() + timedelta(days=days)).isoformat()
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM students WHERE next_payment_date = ?", (target,)
+        "SELECT * FROM students WHERE is_active = 1 AND next_payment_date = ?", (target,)
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -670,19 +832,19 @@ def store_monthly_snapshot():
     today = date.today()
     conn = get_connection()
     ft = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE student_type='Full-time'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND student_type='Full-time'"
     ).fetchone()[0])
     ht = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE student_type='Half-time'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND student_type='Half-time'"
     ).fetchone()[0])
     male = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE gender='Male'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND gender='Male'"
     ).fetchone()[0])
     female = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE gender='Female'"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND gender='Female'"
     ).fetchone()[0])
     other = int(conn.execute(
-        "SELECT COUNT(*) FROM students WHERE gender NOT IN ('Male','Female')"
+        "SELECT COUNT(*) FROM students WHERE is_active = 1 AND gender NOT IN ('Male','Female')"
     ).fetchone()[0])
     first_of_month = today.replace(day=1).isoformat()
     rev = float(conn.execute(

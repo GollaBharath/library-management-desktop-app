@@ -81,7 +81,7 @@ class RemovedStudentsWidget(QWidget):
         self._table.setColumnWidth(5, 100)
         self._table.setColumnWidth(6, 130)
         self._table.setColumnWidth(7, 130)
-        self._table.setColumnWidth(8, 100)
+        self._table.setColumnWidth(8, 160)
         root.addWidget(self._table)
 
         # Count bar
@@ -132,17 +132,68 @@ class RemovedStudentsWidget(QWidget):
                 f"background-color: #2A2A3A; border-radius: 6px; color: {DANGER};"
                 f"border: 1px solid {DANGER};"
             )
-            del_btn.clicked.connect(lambda _, rid=s["id"]: self._delete_record(rid))
+            del_btn.clicked.connect(
+                lambda _, rid=s["id"], src=s.get("archive_source", "legacy"): self._delete_record(rid, src)
+            )
+
+            readmit_btn = QPushButton("↩️")
+            readmit_btn.setToolTip("Re-admit student")
+            readmit_btn.setFixedSize(32, 32)
+            readmit_btn.setStyleSheet(
+                f"background-color: #2A2A3A; border-radius: 6px; color: {SUCCESS};"
+                f"border: 1px solid {SUCCESS};"
+            )
+            if s.get("archive_source") == "inactive":
+                readmit_btn.clicked.connect(lambda _, sid=s["id"]: self._readmit_student(sid))
+            else:
+                readmit_btn.setEnabled(False)
+                readmit_btn.setToolTip("Re-admit is available for newly archived students")
+
+            btn_layout.addWidget(readmit_btn)
             btn_layout.addWidget(del_btn)
             btn_layout.addStretch()
             self._table.setCellWidget(row, 8, cell_widget)
 
-    def _delete_record(self, record_id: int):
+    def _delete_record(self, record_id: int, source: str):
+        if source == "inactive":
+            prompt = (
+                "Permanently delete this archived student?\n\n"
+                "This will also remove their payment history and affect lifetime revenue reports."
+            )
+        else:
+            prompt = "Permanently delete this archived record? This cannot be undone."
+
         reply = QMessageBox.question(
             self, "Delete Record",
-            "Permanently delete this archived record? This cannot be undone.",
+            prompt,
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         )
         if reply == QMessageBox.Yes:
-            db.delete_removed_student_record(record_id)
+            db.delete_removed_student_record(record_id, source)
             self.refresh()
+
+    def _readmit_student(self, student_id: int):
+        reply = QMessageBox.question(
+            self, "Re-admit Student",
+            "Re-activate this student and move them back to active students list?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        result = db.readmit_student(student_id)
+        if not result.get("ok"):
+            QMessageBox.warning(
+                self, "Re-admit Failed",
+                "Unable to re-admit this student. Please refresh and try again."
+            )
+            return
+
+        if result.get("seat_conflict"):
+            QMessageBox.information(
+                self, "Re-admitted",
+                "Student re-admitted successfully. Previous seat was occupied, so seat assignment was cleared."
+            )
+        else:
+            QMessageBox.information(self, "Re-admitted", "Student re-admitted successfully.")
+        self.refresh()

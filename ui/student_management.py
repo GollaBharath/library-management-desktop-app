@@ -841,7 +841,8 @@ class StudentManagementWidget(QWidget):
         reply = QMessageBox.question(
             self, "Remove Student",
             f"Are you sure you want to remove <b>{student['name']}</b> [{code}]?<br><br>"
-            "The record will be archived in the Removed Students section.",
+            "The student will be archived (not permanently deleted) in Removed Students, "
+            "so payment history is preserved and re-admit is possible.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
@@ -856,7 +857,7 @@ class StudentManagementWidget(QWidget):
                     pass
             QMessageBox.information(
                 self, "Removed",
-                f"{student['name']} has been removed and archived."
+                f"{student['name']} has been archived. You can re-admit from Removed Students anytime."
             )
             self.refresh()
             self.data_changed.emit()

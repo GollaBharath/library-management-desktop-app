@@ -69,7 +69,6 @@ library-management-desktop-app/
 ├── database.py              # SQLite ORM helpers
 ├── styles.py                # Dark theme stylesheet
 ├── requirements.txt
-├── library.db               # Auto-created on first run
 ├── ui/
 │   ├── dashboard.py
 │   ├── seat_layout.py
@@ -82,6 +81,17 @@ library-management-desktop-app/
     ├── whatsapp.py
     └── export.py
 ```
+
+## Local Data Storage
+
+The app stores its SQLite database in a per-user OS app-data directory:
+
+- Linux: `~/.local/share/StudyPoint/library.db` (or `$XDG_DATA_HOME/StudyPoint/library.db`)
+- Windows: `%APPDATA%\StudyPoint\library.db`
+- macOS: `~/Library/Application Support/StudyPoint/library.db`
+
+If an older install has `library.db` next to the executable, it is copied automatically
+to the new per-user location on first run.
 
 ---
 
