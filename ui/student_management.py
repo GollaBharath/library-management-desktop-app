@@ -63,6 +63,47 @@ def _form_row_visible(form: QFormLayout, widget, visible: bool):
             item.widget().setVisible(visible)
 
 
+def _apply_white_combo_style(combo: QComboBox):
+    """Force white dropdown field for specific dialog comboboxes."""
+    combo.setStyleSheet(
+        "QComboBox {"
+        " background-color: white;"
+        " color: black;"
+        " border: 1px solid #2A2A4A;"
+        " border-radius: 6px;"
+        " padding: 8px 10px;"
+        "}"
+        "QComboBox:!editable, QComboBox::drop-down:editable {"
+        " background-color: white;"
+        " color: black;"
+        "}"
+        "QComboBox:!editable:on, QComboBox::drop-down:editable:on {"
+        " background-color: #F2F2F2;"
+        " color: black;"
+        "}"
+        "QComboBox::drop-down {"
+        " border: none;"
+        " width: 24px;"
+        " background-color: transparent;"
+        "}"
+        "QComboBox QAbstractItemView {"
+        " background-color: white;"
+        " color: black;"
+        " border: 1px solid #2A2A4A;"
+        " outline: none;"
+        "}"
+        "QComboBox QAbstractItemView::item {"
+        " background-color: white;"
+        " color: black;"
+        " padding: 6px 10px;"
+        "}"
+        "QComboBox QAbstractItemView::item:selected {"
+        f" background-color: {ACCENT};"
+        " color: white;"
+        "}"
+    )
+
+
 # ─── Styled button helpers ────────────────────────────────────────────────────
 
 _BTN_STYLES = {
@@ -104,11 +145,6 @@ class QuickAddStudentDialog(QDialog):
         self.setStyleSheet(
             f"QDialog {{ background-color: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
             f"QLabel   {{ color: {TEXT_PRIMARY}; background: transparent; }}"
-            f"QComboBox {{ background-color: white; color: black; border: 1px solid #2A2A4A; border-radius: 6px; padding: 8px 10px; }}"
-            f"QComboBox:hover {{ border-color: {ACCENT}; }}"
-            f"QComboBox QAbstractItemView {{ background-color: white; color: black; border: 1px solid {BG_HOVER}; }}"
-            f"QComboBox QAbstractItemView::item {{ color: black; background-color: white; padding: 6px 10px; }}"
-            f"QComboBox QAbstractItemView::item:selected {{ background-color: {ACCENT}; color: white; }}"
         )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -140,10 +176,12 @@ class QuickAddStudentDialog(QDialog):
 
         self._gender = QComboBox()
         self._gender.addItems(["Male", "Female", "Other"])
+        _apply_white_combo_style(self._gender)
         self._form.addRow("Gender", self._gender)
 
         self._type = QComboBox()
         self._type.addItems(["Full-time", "Half-time"])
+        _apply_white_combo_style(self._type)
         self._type.currentIndexChanged.connect(self._on_type)
         self._form.addRow("Type *", self._type)
 
@@ -153,6 +191,7 @@ class QuickAddStudentDialog(QDialog):
         self._seat.addItem("-- Select Seat --", None)
         for sn in avail:
             self._seat.addItem(f"Seat {sn}", sn)
+        _apply_white_combo_style(self._seat)
         self._form.addRow("Seat Number", self._seat)
 
         self._fulltime_info = QLabel("Hours: 6:00 AM  –  11:00 PM  (Full Day)")
@@ -164,6 +203,7 @@ class QuickAddStudentDialog(QDialog):
         # Half-time widgets
         self._shift = QComboBox()
         self._shift.addItems(["Morning  (6 AM – 2 PM)", "Evening  (2 PM – 11 PM)"])
+        _apply_white_combo_style(self._shift)
         self._form.addRow("Shift", self._shift)
 
         root.addLayout(self._form)
@@ -249,11 +289,6 @@ class StudentDialog(QDialog):
         self.setStyleSheet(
             f"QDialog {{ background-color: {BG_PANEL}; color: {TEXT_PRIMARY}; }}"
             f"QLabel   {{ color: {TEXT_PRIMARY}; background: transparent; }}"
-            f"QComboBox {{ background-color: white; color: black; border: 1px solid #2A2A4A; border-radius: 6px; padding: 8px 10px; }}"
-            f"QComboBox:hover {{ border-color: {ACCENT}; }}"
-            f"QComboBox QAbstractItemView {{ background-color: white; color: black; border: 1px solid {BG_HOVER}; }}"
-            f"QComboBox QAbstractItemView::item {{ color: black; background-color: white; padding: 6px 10px; }}"
-            f"QComboBox QAbstractItemView::item:selected {{ background-color: {ACCENT}; color: white; }}"
         )
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -312,6 +347,7 @@ class StudentDialog(QDialog):
 
         self._gender = QComboBox()
         self._gender.addItems(["Male", "Female", "Other"])
+        _apply_white_combo_style(self._gender)
         g_idx = {"Male": 0, "Female": 1, "Other": 2}.get(
             self._data.get("gender", "Male"), 0
         )
@@ -328,6 +364,7 @@ class StudentDialog(QDialog):
 
         self._type = QComboBox()
         self._type.addItems(["Full-time", "Half-time"])
+        _apply_white_combo_style(self._type)
         t_idx = 0 if self._data.get("student_type", "Full-time") == "Full-time" else 1
         self._type.setCurrentIndex(t_idx)
         self._type.currentIndexChanged.connect(self._on_type_change)
@@ -342,6 +379,7 @@ class StudentDialog(QDialog):
         self._seat.addItem("-- Select Seat --", None)
         for sn in avail:
             self._seat.addItem(f"Seat {sn}", sn)
+        _apply_white_combo_style(self._seat)
         if cur_seat:
             for i in range(self._seat.count()):
                 if self._seat.itemData(i) == cur_seat:
@@ -358,6 +396,7 @@ class StudentDialog(QDialog):
         # Half-time: shift selector
         self._shift = QComboBox()
         self._shift.addItems(["Morning  (6 AM – 2 PM)", "Evening  (2 PM – 11 PM)"])
+        _apply_white_combo_style(self._shift)
         if "Evening" in (self._data.get("shift") or ""):
             self._shift.setCurrentIndex(1)
         self._form.addRow("Shift", self._shift)
